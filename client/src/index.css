@@ -1,18 +1,18 @@
 :root {
-  --color-bg: #f7f8fc;
-  --color-surface: #ffffff;
-  --color-border: #e6e8f0;
-  --color-text: #1f2430;
-  --color-text-muted: #6b7280;
+  --color-bg: #0b0f19;
+  --color-surface: rgba(17, 24, 39, 0.7);
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-text: #f8fafc;
+  --color-text-muted: #94a3b8;
   --color-accent: #6366f1;
-  --color-accent-hover: #5254d3;
-  --color-accent-soft: #eef0fe;
-  --color-success-soft: #e6f7ef;
+  --color-accent-hover: #4f46e5;
+  --color-accent-soft: rgba(99, 102, 241, 0.15);
+  --color-success-soft: rgba(16, 185, 129, 0.15);
   --color-success: #10b981;
   --radius-lg: 16px;
-  --radius-md: 10px;
+  --radius-md: 12px;
   --radius-sm: 8px;
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
 * {
@@ -22,9 +22,10 @@
 body {
   margin: 0;
   font-family: var(--font-sans);
-  background: var(--color-bg);
+  background: radial-gradient(circle at 50% 0%, #1e1b4b 0%, #0b0f19 75%);
   color: var(--color-text);
   -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
 }
 
 button {
@@ -119,7 +120,9 @@ button {
   justify-content: space-between;
   padding: 14px 28px;
   border-bottom: 1px solid var(--color-border);
-  background: var(--color-surface);
+  background: rgba(17, 24, 39, 0.7);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
 }
 
 .breadcrumb {
@@ -152,13 +155,16 @@ button {
   width: 100%;
   max-width: 780px;
   height: auto;
-  background: var(--color-surface);
+  background: rgba(17, 24, 39, 0.55);
   border-radius: var(--radius-lg);
-  box-shadow: 0 1px 3px rgba(20, 20, 43, 0.06), 0 8px 24px rgba(20, 20, 43, 0.05);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
   padding: 28px;
   display: flex;
   flex-direction: column;
   gap: 20px;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
 }
 
 .upload-row {
@@ -718,7 +724,7 @@ button {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   padding: 0 12px 8px 12px;
-  border-bottom: 1px solid #f1f3f7;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   margin-bottom: 12px;
   border-left: 1px solid transparent;
   border-right: 1px solid transparent;
@@ -729,16 +735,17 @@ button {
   grid-template-columns: 1fr 30px 1fr 40px;
   gap: 12px;
   align-items: center;
-  background: #fcfdfe;
-  border: 1px solid #eaeef4;
+  background: rgba(17, 24, 39, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: var(--radius-sm);
   padding: 8px 12px;
   transition: all 0.2s ease;
 }
 
 .mapping-row:hover {
-  border-color: var(--color-accent-light);
-  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.05);
+  border-color: rgba(99, 102, 241, 0.4);
+  background: rgba(99, 102, 241, 0.04);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
 
 .mapping-col {
@@ -752,9 +759,9 @@ button {
 .mapping-select {
   width: 100%;
   padding: 8px 12px;
-  border: 1px solid var(--color-border);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: var(--radius-sm);
-  background: white;
+  background: rgba(15, 23, 42, 0.6);
   color: var(--color-text);
   font-size: 13.5px;
   font-weight: 500;
@@ -764,13 +771,18 @@ button {
   appearance: none;
 }
 
+.mapping-select option {
+  background-color: #0f172a;
+  color: #f8fafc;
+}
+
 .mapping-select:hover {
-  border-color: #b4c6e4;
+  border-color: rgba(255, 255, 255, 0.25);
 }
 
 .mapping-select:focus {
   border-color: var(--color-accent);
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
 }
 
 /* Custom select arrow */
