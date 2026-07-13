@@ -1,48 +1,53 @@
 # Sheetshift
 
-Upload a source ("FROM") and target ("TO") Excel file, describe a transformation in plain English,
-and get back a working VBA macro — injected directly into the source workbook.
+Sheetshift is a fast, secure, and minimalist Excel column-mapping and data copy-paste utility. 
 
-## Project status: Phase 2 (AI generation wired up)
+Upload a source (`FROM`) Excel sheet and a target (`TO`) Excel sheet, customize the automatically matched column mappings, and execute the data transfer. Sheetshift automatically handles row appending, in-flight deduplication, and performs an automated post-transfer AI quality audit.
 
-This phase includes everything from Phase 1, plus:
-- Parsing FROM/TO files: sheet names, header row, and up to 3 sample data rows per sheet (via `exceljs`)
-- A real call to OpenRouter (`deepseek/deepseek-chat-v3-0324:free` by default) that generates a VBA macro based on your prompt + both files' structure
-- The generated code is displayed in a read-only panel in the UI, with a copy button
-- A mock mode (`OPENROUTER_MOCK=true` in `.env`) to test the whole pipeline without spending API credits
+## Key Features
 
-Not yet built (later phases):
-- Phase 3: Python + pywin32 script that injects the generated VBA into the FROM file via Excel COM
-- Phase 4: Making the code panel editable, so you can tweak the macro before it's injected
-- Phase 5: Overwrite vs. save-as choice, polish, error handling
+- **Header Auto-Matching:** Automatically matches columns case-insensitively upon file upload.
+- **Interactive Mapping Editor:** Edit column associations, add new columns, or skip unwanted fields in a clean, responsive layout.
+- **Duplicate Prevention:** Identifies the primary ID column (e.g., Customer ID) and filters out duplicate rows dynamically.
+- **AI Quality Auditor:** Generates a post-transfer audit report via OpenRouter to verify data copy alignment (with warning fallback if API key is not configured).
+- **Vercel Cloud Ready:** Out-of-the-box serverless monorepo configuration with dynamic `os.tmpdir()` filesystem allocations.
 
 ## Requirements
 
 - Node.js 18+
-- Python 3.9+ with `pywin32` installed (`pip install pywin32`) — only needed starting Phase 3
-- Microsoft Excel installed (Windows) — only needed starting Phase 3
-- An OpenRouter API key — get one at https://openrouter.ai/keys
+- An OpenRouter API key (optional; get one at [openrouter.ai](https://openrouter.ai/keys))
 
-## Running it
+## Local Development
 
-**Server:**
+### 1. Backend Server Setup
+
 ```bash
 cd server
 npm install
 copy .env.example .env
 ```
-Then open `.env` and paste in your `OPENROUTER_API_KEY`. Leave `OPENROUTER_MOCK=false` to use the real API, or set it to `true` to test without spending credits.
+Open `.env` and configure your `OPENROUTER_API_KEY` and target model.
+Start the dev server (listening on port `3001`):
 ```bash
 npm run dev
 ```
 
-**Client:**
+### 2. Frontend Client Setup
+
 ```bash
 cd client
 npm install
 npm run dev
 ```
+Open the dev server at the local URL (usually `http://localhost:5174` or `http://localhost:5173`).
 
-Client runs on http://localhost:5173, server on http://localhost:3001. Upload a FROM and TO `.xlsx` file, type a request, and click Generate — the VBA code will appear below the card.
+---
 
-Note: legacy `.xls` files can be uploaded but can't be parsed for structure yet (`exceljs` only reads the modern `.xlsx`/`.xlsm` format) — you'll get a clear error asking you to re-save as `.xlsx`.
+## Cloud Deployment (Vercel)
+
+This project is configured as a monorepo ready for instant deploy via Vercel:
+
+1. Import the repository directly on your **[Vercel Dashboard](https://vercel.com/dashboard)**.
+2. Vercel automatically reads the root `vercel.json` to handle React static builds and compile the Node backend server as a Serverless Function.
+3. Add your environment variables (`OPENROUTER_API_KEY`, etc.) in the Vercel project configuration.
+4. Click **Deploy**.
