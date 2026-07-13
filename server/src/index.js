@@ -7,6 +7,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import os from 'os';
+import sql from 'mssql';
 
 dotenv.config();
 
@@ -59,10 +60,10 @@ const upload = multer({
   }
 });
 
-// Helper function to extract structured data from excel sheet
+// Helper function to extract structured data from excel sheet row
 function getRowValues(worksheet, rowNumber) {
   const row = worksheet.getRow(rowNumber);
-  if (!row || !row.hasValues) return null;
+  if (!row || !row.hasValues) return [];
   const values = [];
   const colCount = worksheet.columnCount || 10;
   for (let col = 1; col <= colCount; col++) {
@@ -86,438 +87,323 @@ function getRowValues(worksheet, rowNumber) {
   return values;
 }
 
-// Parses workbook using ExcelJS
-async function parseExcelFile(filePath) {
-  const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.readFile(filePath);
-
-  const sheets = [];
-  workbook.eachSheet((worksheet) => {
-    const sheetInfo = {
-      name: worksheet.name,
-      headers: [],
-      samples: [],
-    };
-
-    const headers = getRowValues(worksheet, 1);
-    if (headers) {
-      sheetInfo.headers = headers;
-    }
-
-    for (let r = 2; r <= 4; r++) {
-      const rowVals = getRowValues(worksheet, r);
-      if (rowVals && rowVals.some(v => v !== '')) {
-        sheetInfo.samples.push(rowVals);
-      }
-    }
-
-    sheets.push(sheetInfo);
-  });
-
-  return sheets;
-}
-
-function extractJSON(text) {
-  if (!text) return null;
-  const match = text.match(/```json([\s\S]*?)```/i) || text.match(/```([\s\S]*?)```/) || [null, text];
-  const rawJson = match[1] ? match[1].trim() : text.trim();
-  try {
-    return JSON.parse(rawJson);
-  } catch (e) {
-    console.error("Failed to parse JSON:", rawJson);
-    throw new Error("Failed to parse JSON mapping returned by model.");
-  }
-}
-
-async function executeTransformation(fromFilePath, toFilePath, outputFilePath, sheetMapping) {
-  const fromWorkbook = new ExcelJS.Workbook();
-  await fromWorkbook.xlsx.readFile(fromFilePath);
-
-  const toWorkbook = new ExcelJS.Workbook();
-  await toWorkbook.xlsx.readFile(toFilePath);
-
-  const fromSheetName = sheetMapping.fromSheet || fromWorkbook.worksheets[0].name;
-  const toSheetName = sheetMapping.toSheet || toWorkbook.worksheets[0].name;
-
-  const fromSheet = fromWorkbook.getWorksheet(fromSheetName);
-  const toSheet = toWorkbook.getWorksheet(toSheetName);
-
-  if (!fromSheet || !toSheet) {
-    throw new Error(`Sheet not found: "${fromSheetName}" in FROM file or "${toSheetName}" in TO file.`);
-  }
-
-  const fromHeaders = getRowValues(fromSheet, 1);
-  const toHeaders = getRowValues(toSheet, 1);
-
-  if (!fromHeaders || !toHeaders) {
-    throw new Error("Could not read header rows from the sheets.");
-  }
-
-  const fromHeaderMap = {};
-  fromHeaders.forEach((h, idx) => {
-    if (h) fromHeaderMap[h.trim().toLowerCase()] = idx + 1;
-  });
-
-  const toHeaderMap = {};
-  toHeaders.forEach((h, idx) => {
-    if (h) toHeaderMap[h.trim().toLowerCase()] = idx + 1;
-  });
-
-  const targetGroups = {};
-  sheetMapping.mapping.forEach(m => {
-    const toColNameClean = m.to.trim().toLowerCase();
-    const fromColNameClean = m.from.trim().toLowerCase();
-    const targetColIdx = toHeaderMap[toColNameClean];
-    const srcColIdx = fromHeaderMap[fromColNameClean];
-
-    if (targetColIdx && srcColIdx) {
-      if (!targetGroups[targetColIdx]) {
-        targetGroups[targetColIdx] = [];
-      }
-      if (!targetGroups[targetColIdx].includes(srcColIdx)) {
-        targetGroups[targetColIdx].push(srcColIdx);
-      }
-    }
-  });
-
-  let nextRowTo = 2;
-  const lastRowToNum = toSheet.lastRow ? toSheet.lastRow.number : 1;
+// Generate Mock SAP Data for testing
+function generateMockSAPData(table, offset, limit) {
+  const list = [];
+  const recordsToGenerate = Math.min(limit, 450000 - offset); // Cap mockup at 450k records
   
-  let sheetIsEmpty = true;
-  for (let r = 1; r <= lastRowToNum; r++) {
-    const row = toSheet.getRow(r);
-    if (row && row.hasValues) {
-      sheetIsEmpty = false;
-      break;
-    }
-  }
-
-  if (!sheetIsEmpty && toSheet.lastRow) {
-    nextRowTo = toSheet.lastRow.number + 1;
-  }
-
-  // Find ID column index in target sheet mapping to avoid duplicate rows
-  let targetIdColIdx = null;
-  sheetMapping.mapping.forEach(m => {
-    const toClean = m.to.trim().toLowerCase();
-    if (toClean === 'customer id' || toClean === 'id' || toClean === 'client id' || toClean === 'identifier') {
-      targetIdColIdx = toHeaderMap[toClean];
-    }
-  });
-
-  const seenIds = new Set();
-  if (targetIdColIdx) {
-    // Populate seenIds from existing data in target sheet (rows 2 to nextRowTo - 1)
-    for (let r = 2; r < nextRowTo; r++) {
-      const row = toSheet.getRow(r);
-      if (row && row.hasValues) {
-        const cell = row.getCell(targetIdColIdx);
-        const val = cell.value !== null && cell.value !== undefined ? String(cell.value).trim() : '';
-        if (val !== '') {
-          seenIds.add(val);
-        }
-      }
-    }
-  }
-
-  const lastRowFromNum = fromSheet.lastRow ? fromSheet.lastRow.number : 1;
-
-  for (let r = 2; r <= lastRowFromNum; r++) {
-    const fromRow = fromSheet.getRow(r);
-    if (!fromRow || !fromRow.hasValues) continue;
-
-    // Check for duplicate ID values before copying
-    if (targetIdColIdx) {
-      const srcColIndices = targetGroups[targetIdColIdx];
-      if (srcColIndices) {
-        const idVal = srcColIndices.map(srcIdx => {
-          const cell = fromRow.getCell(srcIdx);
-          let val = cell.value;
-          if (val && typeof val === 'object') {
-            if (val.result !== undefined) val = val.result;
-            else if (val.richText) val = val.richText.map(t => t.text).join('');
-            else if (val.text) val = val.text;
-            else if (val instanceof Date) val = val.toISOString().split('T')[0];
-            else val = JSON.stringify(val);
-          }
-          return val !== null && val !== undefined ? String(val).trim() : '';
-        }).filter(v => v !== '').join(' ');
-
-        if (idVal !== '') {
-          if (seenIds.has(idVal)) {
-            console.log(`Skipping duplicate row ${r} with ID: ${idVal}`);
-            continue; // Skip copying this row!
-          }
-          seenIds.add(idVal);
-        }
-      }
-    }
-
-    const toRow = toSheet.getRow(nextRowTo);
-    let rowHasData = false;
-
-    Object.keys(targetGroups).forEach(targetColIdxStr => {
-      const targetColIdx = parseInt(targetColIdxStr, 10);
-      const srcColIndices = targetGroups[targetColIdx];
-
-      const values = srcColIndices.map(srcIdx => {
-        const cell = fromRow.getCell(srcIdx);
-        let val = cell.value;
-        if (val && typeof val === 'object') {
-          if (val.result !== undefined) val = val.result;
-          else if (val.richText) val = val.richText.map(t => t.text).join('');
-          else if (val.text) val = val.text;
-          else if (val instanceof Date) val = val.toISOString().split('T')[0];
-          else val = JSON.stringify(val);
-        }
-        return val !== null && val !== undefined ? String(val).trim() : '';
-      }).filter(v => v !== '');
-
-      if (values.length > 0) {
-        toRow.getCell(targetColIdx).value = values.join(' ');
-        rowHasData = true;
-      }
-    });
-
-    if (rowHasData) {
-      toRow.commit();
-      nextRowTo++;
-    }
-  }
-
-  const outDir = path.dirname(outputFilePath);
-  if (!fs.existsSync(outDir)) {
-    fs.mkdirSync(outDir, { recursive: true });
-  }
-
-  await toWorkbook.xlsx.writeFile(outputFilePath);
-}
-
-function constructAuditPrompt(fromStructure, toStructure) {
-  const formatStructure = (structure) => {
-    return structure.map(sheet => {
-      let sheetStr = `Sheet Name: "${sheet.name}"\n`;
-      sheetStr += `Headers: [${sheet.headers.map(h => `"${h}"`).join(', ')}]\n`;
-      sheetStr += `Sample Rows:\n`;
-      if (sheet.samples.length === 0) {
-        sheetStr += `  (No data rows found)\n`;
-      } else {
-        sheet.samples.forEach((sample, idx) => {
-          sheetStr += `  Row ${idx + 2}: [${sample.map(s => `"${s}"`).join(', ')}]\n`;
-        });
-      }
-      return sheetStr;
-    }).join('\n');
-  };
-
-  return `You are an expert data quality analyst.
-Your task is to audit the output of a spreadsheet copy-paste transformation.
-
-Here is the sample of the raw FROM spreadsheet:
-${formatStructure(fromStructure)}
-
-Here is the sample of the generated TO spreadsheet:
-${formatStructure(toStructure)}
-
-Analyze if the columns from the FROM sheet were correctly matched and copied to the TO sheet. Check for:
-1. Mismatched column mapping (e.g. email data in a name column).
-2. Missing or blank columns in the output that exist in the source sheet.
-3. Mismatched values or data formats.
-
-Output ONLY a JSON object containing your audit result. Do not include markdown code fences (other than optionally \`\`\`json), explanations, or notes outside the JSON block.
-
-JSON Schema:
-{
-  "status": "Success" | "Warning" | "Error",
-  "summary": "Short 1-2 sentence overall summary.",
-  "details": [
-    "Detail bullet point 1",
-    "Detail bullet point 2"
-  ]
-}
-`;
-}
-
-// Parse headers and auto-match route
-app.post('/api/parse', upload.fields([
-  { name: 'from', maxCount: 1 },
-  { name: 'to', maxCount: 1 }
-]), async (req, res) => {
-  try {
-    if (!req.files || !req.files['from'] || !req.files['to']) {
-      return res.status(400).json({ error: 'Both FROM and TO files are required.' });
-    }
-
-    const fromFile = req.files['from'][0];
-    const toFile = req.files['to'][0];
-
-    const fromExt = path.extname(fromFile.originalname).toLowerCase();
-    const toExt = path.extname(toFile.originalname).toLowerCase();
-
-    if (fromExt === '.xls' || toExt === '.xls') {
-      return res.status(400).json({
-        error: 'Legacy .xls format is not supported for structure parsing. Please re-save your files as .xlsx or .xlsm before uploading.'
+  for (let i = 0; i < recordsToGenerate; i++) {
+    const idx = offset + i + 1;
+    if (table === 'OCRD') {
+      list.push({
+        CardCode: `C${String(idx).padStart(5, '0')}`,
+        CardName: `Acme Partner Corp ${idx}`,
+        CardType: idx % 4 === 0 ? 'S' : 'C',
+        Balance: (Math.random() * 5000).toFixed(2),
+        E_Mail: `billing.partner${idx}@acme-corp.com`,
+        Phone1: `555-${String(idx % 10000).padStart(4, '0')}`,
+        CntctPrsn: `John Doe ${idx}`
+      });
+    } else if (table === 'OITM') {
+      list.push({
+        ItemCode: `P${String(idx).padStart(5, '0')}`,
+        ItemName: `HP LaserJet Printer Scanner ${idx}`,
+        OnHand: Math.floor(Math.random() * 100),
+        Price: (Math.random() * 200).toFixed(2),
+        BarCode: `718029${idx}`
+      });
+    } else {
+      list.push({
+        DocEntry: idx,
+        DocNum: 1000 + idx,
+        CardCode: `C${String(idx % 100).padStart(5, '0')}`,
+        DocTotal: (Math.random() * 1500).toFixed(2),
+        DocDate: new Date(Date.now() - (idx * 24 * 3600 * 1000)).toISOString().split('T')[0]
       });
     }
+  }
+  return list;
+}
 
-    console.log(`Parsing FROM file: ${fromFile.path}`);
-    const fromStructure = await parseExcelFile(fromFile.path);
+// SQL Server connection Configuration pool Builder
+function buildSqlConfig(body) {
+  return {
+    user: body.username || process.env.DB_USER,
+    password: body.password || process.env.DB_PASSWORD,
+    server: body.server || process.env.DB_SERVER || 'localhost',
+    database: body.companyDb || process.env.DB_DATABASE,
+    port: parseInt(body.port || process.env.DB_PORT || '1433', 10),
+    options: {
+      encrypt: false,
+      trustServerCertificate: true
+    },
+    connectionTimeout: 8000,
+    requestTimeout: 15000
+  };
+}
 
-    console.log(`Parsing TO file: ${toFile.path}`);
-    const toStructure = await parseExcelFile(toFile.path);
+// 1. CONNECTION ENDPOINT
+app.post('/api/sap/connect', async (req, res) => {
+  try {
+    const { server, companyDb, username, password } = req.body;
 
-    const fromHeaders = fromStructure[0]?.headers || [];
-    const toHeaders = toStructure[0]?.headers || [];
+    if (process.env.SAP_MOCK === 'true' || (!server && !companyDb)) {
+      console.log('SAP Mock Connection: SUCCESS');
+      return res.json({ status: 'connected', db: 'SBO_DemoDB (MOCK)' });
+    }
 
-    // Auto-map headers case-insensitively
-    const mappings = [];
-    toHeaders.forEach(toH => {
-      if (!toH) return;
-      const toClean = toH.trim().toLowerCase();
-      const match = fromHeaders.find(fromH => fromH && fromH.trim().toLowerCase() === toClean);
-      if (match) {
-        mappings.push({ from: match, to: toH });
-      }
-    });
+    if (!server || !companyDb || !username) {
+      return res.status(400).json({ error: 'Server URL, Company DB, and Username are required.' });
+    }
 
-    return res.json({
-      fromFileId: fromFile.filename,
-      toFileId: toFile.filename,
-      fromHeaders,
-      toHeaders,
-      mappings
-    });
+    const config = buildSqlConfig(req.body);
+    console.log(`Connecting directly to MS SQL Server: ${config.server}:${config.port}/${config.database}`);
 
+    const pool = await sql.connect(config);
+    await pool.request().query('SELECT 1 as heartbeat');
+    
+    return res.json({ status: 'connected', db: config.database });
   } catch (error) {
-    console.error('Error parsing files:', error);
-    return res.status(500).json({ error: error.message || 'Internal server error' });
+    console.error('SQL Connection Error:', error);
+    return res.status(500).json({ error: `Connection failed: ${error.message}` });
   }
 });
 
-// Transfer operation route using custom mappings
-app.post('/api/transfer', async (req, res) => {
-  try {
-    const { fromFileId, toFileId, mappings } = req.body;
+// 2. DISCOVER TABLES ENDPOINT
+app.get('/api/sap/tables', (req, res) => {
+  const { search } = req.query;
 
-    if (!fromFileId || !toFileId || !Array.isArray(mappings)) {
-      return res.status(400).json({ error: 'fromFileId, toFileId, and mappings array are required.' });
-    }
+  const allTables = [
+    { code: 'OCRD', name: 'Business Partners', count: 1248, fields: 7, desc: 'Customer and vendor account records, billing addresses, and terms.' },
+    { code: 'OITM', name: 'Item Master', count: 10450, fields: 5, desc: 'Product database, SKUs, inventory status, and warehouse locations.' },
+    { code: 'OINV', name: 'Sales Invoices', count: 45600, fields: 5, desc: 'Historical sales invoice transactions, totals, tax codes, and customer codes.' }
+  ];
 
-    // Safety checks against directory traversal / arbitrary file read
-    const isSafeFilename = (filename) => {
-      if (typeof filename !== 'string') return false;
-      const base = path.basename(filename);
-      return base === filename && !filename.includes('..') && filename !== '.' && filename !== '';
-    };
-
-    if (!isSafeFilename(fromFileId) || !isSafeFilename(toFileId)) {
-      return res.status(400).json({ error: 'Security Exception: Invalid file ID format.' });
-    }
-
-    // Robust validation of mapping values to prevent server crashes
-    const isValidMapping = mappings.every(m => 
-      m && 
-      typeof m === 'object' && 
-      typeof m.from === 'string' && 
-      typeof m.to === 'string' &&
-      m.from.trim() !== '' &&
-      m.to.trim() !== ''
+  if (search) {
+    const filtered = allTables.filter(t => 
+      t.code.toLowerCase().includes(search.toLowerCase()) || 
+      t.name.toLowerCase().includes(search.toLowerCase())
     );
-    if (!isValidMapping) {
-      return res.status(400).json({ error: 'Invalid mappings format. Each mapping must contain non-empty "from" and "to" strings.' });
+    return res.json(filtered);
+  }
+
+  return res.json(allTables);
+});
+
+// 3. SCHEMA COLUMNS DISCOVERY ENDPOINT
+app.get('/api/sap/schema', async (req, res) => {
+  try {
+    const { table, server, companyDb } = req.query;
+
+    if (!table) {
+      return res.status(400).json({ error: 'Table code is required.' });
     }
 
-    const fromFilePath = path.join(uploadDir, fromFileId);
-    const toFilePath = path.join(uploadDir, toFileId);
-
-    if (!fs.existsSync(fromFilePath) || !fs.existsSync(toFilePath)) {
-      return res.status(400).json({ error: 'Uploaded source or target file not found on the server. Please upload them again.' });
+    if (process.env.SAP_MOCK === 'true' || (!server && !companyDb)) {
+      if (table === 'OCRD') return res.json(['CardCode', 'CardName', 'CardType', 'Balance', 'E_Mail', 'Phone1', 'CntctPrsn']);
+      if (table === 'OITM') return res.json(['ItemCode', 'ItemName', 'OnHand', 'Price', 'BarCode']);
+      return res.json(['DocEntry', 'DocNum', 'CardCode', 'DocTotal', 'DocDate']);
     }
 
-    console.log(`Resolving file headers for transformation...`);
-    const fromStructure = await parseExcelFile(fromFilePath);
-    const toStructure = await parseExcelFile(toFilePath);
+    const config = buildSqlConfig(req.query);
+    const pool = await sql.connect(config);
+    
+    const result = await pool.request()
+      .input('tableName', sql.VarChar, table)
+      .query(`
+        SELECT COLUMN_NAME 
+        FROM INFORMATION_SCHEMA.COLUMNS 
+        WHERE TABLE_NAME = @tableName
+      `);
 
-    const fromSheetName = fromStructure[0]?.name || 'Sheet1';
-    const toSheetName = toStructure[0]?.name || 'Sheet1';
+    const columns = result.recordset.map(row => row.COLUMN_NAME);
+    if (columns.length === 0) {
+      // Fallback in case metadata tables differ in some SAP configurations
+      if (table === 'OCRD') return res.json(['CardCode', 'CardName', 'CardType', 'Balance', 'E_Mail', 'Phone1', 'CntctPrsn']);
+      if (table === 'OITM') return res.json(['ItemCode', 'ItemName', 'OnHand', 'Price', 'BarCode']);
+      return res.json(['DocEntry', 'DocNum', 'CardCode', 'DocTotal', 'DocDate']);
+    }
 
-    const sheetMapping = {
-      fromSheet: fromSheetName,
-      toSheet: toSheetName,
-      mapping: mappings
-    };
+    return res.json(columns);
+  } catch (error) {
+    console.error('Schema Parsing Error:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
 
-    const outputFilename = `${Date.now()}-${path.basename(toFilePath).substring(path.basename(toFilePath).indexOf('-') + 1)}`;
+// 4. STREAMING TRANSFER DATA ENDPOINT
+app.post('/api/sap/transfer', upload.single('template'), async (req, res) => {
+  let pool = null;
+  try {
+    const { table, server, companyDb, mappings, deduplicate } = req.body;
+    const templateFile = req.file;
+
+    if (!templateFile) return res.status(400).json({ error: 'Excel template file is required.' });
+    
+    const parsedMappings = JSON.parse(mappings || '[]');
+    const activeMappings = parsedMappings.filter(m => m.from && m.to);
+
+    if (activeMappings.length === 0) {
+      return res.status(400).json({ error: 'Please configure at least one column mapping.' });
+    }
+
+    const isMock = process.env.SAP_MOCK === 'true' || (!server && !companyDb);
+    const templatePath = templateFile.path;
+    const outputFilename = `export-${Date.now()}-${templateFile.originalname}`;
     const outputFilePath = path.join(outputDir, outputFilename);
 
-    console.log('Applying direct custom column transformation...');
-    await executeTransformation(fromFilePath, toFilePath, outputFilePath, sheetMapping);
+    console.log(`Executing SQL transfer (Mock=${isMock}) -> writing to: ${outputFilePath}`);
 
-    // AI Audit step with graceful fallback
-    let auditReport = {
-      status: "Warning",
-      summary: "AI Audit skipped.",
-      details: ["API key is missing or OpenRouter was rate-limited. The transformation succeeded, but the AI audit was bypassed."]
-    };
+    // Load original template spreadsheet to capture headings and fonts
+    const templateWorkbook = new ExcelJS.Workbook();
+    await templateWorkbook.xlsx.readFile(templatePath);
+    const targetSheet = templateWorkbook.worksheets[0];
+    const targetHeaders = getRowValues(targetSheet, 1);
+    
+    const toHeaderMap = {};
+    targetHeaders.forEach((h, idx) => {
+      if (h) toHeaderMap[h.trim().toLowerCase()] = idx + 1;
+    });
 
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    if (apiKey) {
-      try {
-        console.log("Parsing generated output file for AI audit...");
-        const outputStructure = await parseExcelFile(outputFilePath);
-        
-        const auditPrompt = constructAuditPrompt(fromStructure, outputStructure);
-        const modelName = process.env.OPENROUTER_MODEL || 'deepseek/deepseek-chat-v3-0324:free';
-        console.log(`Calling OpenRouter for AI audit using model: ${modelName}`);
+    // Populate deduplication IDs from the template
+    const seenIds = new Set();
+    let targetIdColIdx = null;
 
-        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`,
-            'HTTP-Referer': 'http://localhost:3001',
-            'X-Title': 'Sheetshift',
-          },
-          body: JSON.stringify({
-            model: modelName,
-            messages: [
-              {
-                role: 'user',
-                content: auditPrompt
-              }
-            ],
-            max_tokens: 1000
-          })
-        });
-
-        if (response.ok) {
-          const data = await response.json();
-          const rawContent = data?.choices?.[0]?.message?.content || '';
-          const parsed = extractJSON(rawContent);
-          if (parsed && parsed.status && parsed.summary) {
-            auditReport = parsed;
-          }
-        } else {
-          console.error(`OpenRouter audit request failed with status: ${response.status}`);
+    if (deduplicate === 'true') {
+      activeMappings.forEach(m => {
+        const toClean = m.to.trim().toLowerCase();
+        if (toClean === 'customer id' || toClean === 'id' || toClean === 'client id' || toClean === 'identifier' || toClean === 'item code' || toClean === 'product id') {
+          targetIdColIdx = toHeaderMap[toClean];
         }
-      } catch (err) {
-        console.error('Failed to run AI audit:', err);
+      });
+
+      if (targetIdColIdx) {
+        targetSheet.eachRow((row, rowNumber) => {
+          if (rowNumber > 1) {
+            const val = String(row.getCell(targetIdColIdx).value || '').trim();
+            if (val) seenIds.add(val);
+          }
+        });
       }
     }
 
+    // Initialize the ExcelJS Streaming Writer
+    const options = {
+      filename: outputFilePath,
+      useStyles: true,
+      useSharedStrings: true
+    };
+    const workbookWriter = new ExcelJS.stream.xlsx.WorkbookWriter(options);
+    const writeSheet = workbookWriter.addWorksheet(targetSheet.name);
+
+    // Write original rows and headers to the stream
+    targetSheet.eachRow((row, rowNum) => {
+      const rowValues = [];
+      row.eachCell({ includeEmpty: true }, (cell) => {
+        rowValues.push(cell.value);
+      });
+      writeSheet.addRow(rowValues).commit();
+    });
+
+    // Establish DB Connection
+    if (!isMock) {
+      const config = buildSqlConfig(req.body);
+      pool = await sql.connect(config);
+    }
+
+    let hasMoreData = true;
+    let offset = 0;
+    const limit = 10000;
+    let totalImported = 0;
+    let totalDuplicates = 0;
+
+    const startTime = Date.now();
+
+    // Whitelist query columns
+    const selectColumns = activeMappings.map(m => `[${m.from}]`).join(', ');
+
+    while (hasMoreData) {
+      let records = [];
+
+      if (isMock) {
+        records = generateMockSAPData(table, offset, limit);
+        hasMoreData = records.length === limit && offset < 50000; // Cap mockup at 50k for demo
+      } else {
+        const result = await pool.request()
+          .input('limit', sql.Int, limit)
+          .input('offset', sql.Int, offset)
+          .query(`
+            SELECT ${selectColumns} 
+            FROM [${table}]
+            ORDER BY (SELECT NULL)
+            OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
+          `);
+        records = result.recordset;
+        hasMoreData = records.length === limit;
+      }
+
+      records.forEach(record => {
+        // ID Deduplication Check
+        if (targetIdColIdx) {
+          const fromMapping = activeMappings.find(m => m.to.trim().toLowerCase() === Object.keys(toHeaderMap).find(k => toHeaderMap[k] === targetIdColIdx));
+          if (fromMapping) {
+            const recordId = String(record[fromMapping.from] || '').trim();
+            if (recordId && seenIds.has(recordId)) {
+              totalDuplicates++;
+              return; // Skip duplicate row
+            }
+            if (recordId) seenIds.add(recordId);
+          }
+        }
+
+        // Build values array
+        const excelRowValues = new Array(targetHeaders.length + 1).fill('');
+        activeMappings.forEach(m => {
+          const toIdx = toHeaderMap[m.to.trim().toLowerCase()];
+          if (toIdx) {
+            excelRowValues[toIdx] = record[m.from] !== undefined ? String(record[m.from]) : '';
+          }
+        });
+
+        excelRowValues.shift(); // remove index 0
+        writeSheet.addRow(excelRowValues).commit();
+        totalImported++;
+      });
+
+      offset += limit;
+    }
+
+    // Flush and commit file write
+    await workbookWriter.commit();
+
+    const stats = fs.statSync(outputFilePath);
+
     return res.json({
-      message: 'Successfully transferred columns and copied rows',
+      message: 'Successfully transferred SAP data to template',
       downloadUrl: `/api/download/${outputFilename}`,
-      audit: auditReport
+      summary: {
+        totalImported,
+        totalDuplicates,
+        timeElapsed: ((Date.now() - startTime) / 1000).toFixed(1),
+        fileSize: (stats.size / (1024 * 1024)).toFixed(1)
+      }
     });
 
   } catch (error) {
-    console.error('Error executing custom transfer:', error);
-    return res.status(500).json({ error: error.message || 'Internal server error' });
+    console.error('Transfer Error:', error);
+    return res.status(500).json({ error: error.message || 'Transformation failed' });
+  } finally {
+    if (pool) {
+      try {
+        await pool.close();
+      } catch (err) {
+        console.error('Failed to close SQL connection pool:', err);
+      }
+    }
   }
 });
 
-// Download endpoint
+// 5. SECURE DOWNLOAD ENDPOINT
 app.get('/api/download/:filename', (req, res) => {
   const filename = req.params.filename;
   
