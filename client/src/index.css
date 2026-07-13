@@ -56,15 +56,10 @@ button {
   font-size: 15px;
 }
 
-.sidebar-brand .logo-dot {
+.sidebar-brand .logo-img {
   width: 28px;
   height: 28px;
-  border-radius: 8px;
-  background: var(--color-accent);
-  color: white;
-  display: grid;
-  place-items: center;
-  font-size: 14px;
+  object-fit: contain;
 }
 
 .new-session-btn {

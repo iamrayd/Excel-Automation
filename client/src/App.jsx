@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import UploadZone from './components/UploadZone.jsx'
+import logo from './logo.png'
 
 export default function App() {
   const downloadPanelRef = useRef(null)
@@ -152,7 +153,7 @@ export default function App() {
       <div className="main">
         <div className="topbar">
           <div className="sidebar-brand">
-            <span className="logo-dot">✦</span>
+            <img src={logo} alt="Sheetshift Logo" className="logo-img" />
             Sheetshift
           </div>
           <button className="new-session-btn" onClick={resetAll}>

@@ -6,6 +6,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import os from 'os';
 
 dotenv.config();
 
@@ -24,10 +25,15 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
-// Set up upload directories
-const uploadDir = path.join(__dirname, '../uploads');
+// Set up upload and output directories
+const uploadDir = process.env.VERCEL ? path.join(os.tmpdir(), 'uploads') : path.join(__dirname, '../uploads');
+const outputDir = process.env.VERCEL ? path.join(os.tmpdir(), 'outputs') : path.join(__dirname, '../outputs');
+
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
+}
+if (!fs.existsSync(outputDir)) {
+  fs.mkdirSync(outputDir, { recursive: true });
 }
 
 const storage = multer.diskStorage({
@@ -442,7 +448,7 @@ app.post('/api/transfer', async (req, res) => {
     };
 
     const outputFilename = `${Date.now()}-${path.basename(toFilePath).substring(path.basename(toFilePath).indexOf('-') + 1)}`;
-    const outputFilePath = path.join(__dirname, '../outputs', outputFilename);
+    const outputFilePath = path.join(outputDir, outputFilename);
 
     console.log('Applying direct custom column transformation...');
     await executeTransformation(fromFilePath, toFilePath, outputFilePath, sheetMapping);
@@ -526,7 +532,7 @@ app.get('/api/download/:filename', (req, res) => {
     return res.status(400).json({ error: 'Security Exception: Invalid download name.' });
   }
 
-  const filePath = path.join(__dirname, '../outputs', filename);
+  const filePath = path.join(outputDir, filename);
   if (fs.existsSync(filePath)) {
     res.download(filePath, filename);
   } else {
